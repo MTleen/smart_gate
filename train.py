@@ -118,8 +118,9 @@ def train(hyp):
                              if model.state_dict()[k].shape == v.shape}  # to FP32, filter
             model.load_state_dict(ckpt['model'], strict=False)
         except KeyError as e:
-            s = "%s is not compatible with %s. Specify --weights '' or specify a --cfg compatible with %s." \
-                % (opt.weights, opt.cfg, opt.weights)
+            s = "%s is not compatible with %s. This may be due to model differences or %s may be out of date. " \
+                "Please delete or update %s and try again, or use --weights '' to train from scatch." \
+                % (opt.weights, opt.cfg, opt.weights, opt.weights)
             raise KeyError(s) from e
 
         # load optimizer
@@ -132,7 +133,13 @@ def train(hyp):
             with open(results_file, 'w') as file:
                 file.write(ckpt['training_results'])  # write results.txt
 
+        # epochs
         start_epoch = ckpt['epoch'] + 1
+        if epochs < start_epoch:
+            print('%s has been trained for %g epochs. Fine-tuning for %g additional epochs.' %
+                  (opt.weights, ckpt['epoch'], epochs))
+            epochs += ckpt['epoch']  # finetune additional epochs
+
         del ckpt
 
     # Mixed precision training https://github.com/NVIDIA/apex
@@ -163,7 +170,7 @@ def train(hyp):
 
     # Testloader
     testloader = create_dataloader(test_path, imgsz_test, batch_size, gs, opt,
-                                            hyp=hyp, augment=False, cache=opt.cache_images, rect=True)[0]
+                                   hyp=hyp, augment=False, cache=opt.cache_images, rect=True)[0]
 
     # Model parameters
     hyp['cls'] *= nc / 80.  # scale coco-tuned hyp['cls'] to current dataset
@@ -206,6 +213,10 @@ def train(hyp):
             w = model.class_weights.cpu().numpy() * (1 - maps) ** 2  # class weights
             image_weights = labels_to_image_weights(dataset.labels, nc=nc, class_weights=w)
             dataset.indices = random.choices(range(dataset.n), weights=image_weights, k=dataset.n)  # rand weighted idx
+
+        # Update mosaic border
+        # b = int(random.uniform(0.25 * imgsz, 0.75 * imgsz + gs) // gs * gs)
+        # dataset.mosaic_border = [b - imgsz, -b]  # height, width borders
 
         mloss = torch.zeros(4, device=device)  # mean losses
         print(('\n' + '%10s' * 8) % ('Epoch', 'gpu_mem', 'GIoU', 'obj', 'cls', 'total', 'targets', 'img_size'))
@@ -367,7 +378,7 @@ if __name__ == '__main__':
     parser.add_argument('--multi-scale', action='store_true', help='vary img-size +/- 50%')
     parser.add_argument('--single-cls', action='store_true', help='train as single-class dataset')
     opt = parser.parse_args()
-    opt.weights = last if opt.resume else opt.weights
+    opt.weights = last if opt.resume and not opt.weights else opt.weights
     opt.cfg = check_file(opt.cfg)  # check file
     opt.data = check_file(opt.data)  # check file
     print(opt)
