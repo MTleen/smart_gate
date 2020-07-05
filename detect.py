@@ -1,7 +1,5 @@
 import argparse
-
 import torch.backends.cudnn as cudnn
-
 from utils import google_utils
 from utils.datasets import *
 from utils.utils import *
@@ -12,34 +10,18 @@ import base64
 from threading import Thread
 import logging.config
 import logging
+import os
 
 # app = Flask(__name__)
 # flask_logger = logging.getLogger('werkzeug')
 # flask_logger.setLevel('ERROR')
-server_url = 'http://192.168.31.10:1880/gate'
+server_url = 'http://127.0.0.1:1880/gate'
 api_key = '0V8w14CdUFW2q8hzG11wjVKC'
 secret_key = 'mGGtPZpIx5FlkBFL2Eus3oVUaiIfq74h'
 host = 'https://aip.baidubce.com/oauth/2.0/token?grant_type=client_credentials&client_id=%s&client_secret=%s' % (
     api_key, secret_key)
 response = requests.get(host)
 access_token = response.json()['access_token']
-
-# states = {
-#     'car': {
-#         'status': False,
-#         'timestamp': time.time() * 1000,
-#         'number': None
-#     },
-#     'person': {
-#         'status': False,
-#         'timestamp': time.time() * 1000
-#     },
-#     'close': {
-#         'status': False,
-#         'timestamp': time.time() * 1000
-#     }
-# }
-
 
 def setup_logging(default_path="logger_config.json", default_level=logging.DEBUG):
     path = default_path
@@ -61,15 +43,13 @@ def send_command(url, command, number=None):
         return 'nodered 请求出错，请检查。'
 
 
-# @app.route('/states')
-# def return_states():
-#     return json.dumps(states)
 def is_open(cls, pic_str):
     """
     :param pic_str:
     :param cls:
     :return: is_open, timestamp, result
     """
+    result = None
     if cls == 0:
         request_url = "https://aip.baidubce.com/rest/2.0/face/v3/search"
         params = "{\"image\":\"%s\",\"image_type\":\"BASE64\",\"group_id_list\":\"home\"}" % pic_str
@@ -79,10 +59,11 @@ def is_open(cls, pic_str):
         result = response.json()
         if result['error_code'] == 0 and len(result['result']['user_list']) > 0:
             for user in result['result']['user_list']:
-                if user['score'] > 80:
+                if user['score'] > 75:
                     return True, time.time() * 1000, result
     elif cls == 2:
         request_url = "https://aip.baidubce.com/rest/2.0/ocr/v1/license_plate"
+        car_classify_url = 'https://aip.baidubce.com/rest/2.0/image-classify/v1/car'
         params = {"image": pic_str}
         request_url = request_url + "?access_token=" + access_token
         headers = {'content-type': 'application/x-www-form-urlencoded'}
@@ -91,11 +72,22 @@ def is_open(cls, pic_str):
         if 'error_code' not in result.keys() and (
                 result['words_result']['number'] == '浙AB259Z' or result['words_result'][
             'number'] == '浙AEQ356'):
-            return True, time.time() * 1000, result
+            car_num = result['words_result']['number']
+            params = {"image": pic_str, "top_num": 5}
+            request_url = car_classify_url + "?access_token=" + access_token
+            car_classify_res = requests.post(request_url,
+                                             data=params,
+                                             headers=headers).json()
+            result['car_type'] = car_classify_res['result']
+            if (car_num == '浙AB259Z'
+                    and car_classify_res['result'][0]['name'] == '别克君越') or (
+                        car_num == '浙AEQ356'
+                        and car_classify_res['result'][0]['name'] == '奔腾X80'):
+                return True, time.time() * 1000, result
     return False, None, result
 
 
-def detect(save_img=False, view_img=False):
+def detect(save_img=True, view_img=False):
     logging.info('##################### start detecting #####################')
     try:
         out, source, weights, save_txt, imgsz = \
@@ -120,7 +112,7 @@ def detect(save_img=False, view_img=False):
             cudnn.benchmark = True  # set True to speed up constant image size inference
             dataset = LoadStreams(source, img_size=imgsz)
         else:
-            # save_img = True
+            save_img = True
             dataset = LoadImages(source, img_size=imgsz)
 
         # Get names and colors
@@ -132,13 +124,13 @@ def detect(save_img=False, view_img=False):
         img = torch.zeros((1, 3, imgsz, imgsz), device=device)  # init img
         _ = model(img.half() if half else img) if device.type != 'cpu' else None  # run once
 
-        init_x = None
-        end_x = None
+        init_x = [None] * len(names)
+        end_x = [None] * len(names)
         for path, img, im0s, vid_cap in dataset:
+            torch.cuda.empty_cache()
             output = out + '/' + time.strftime('%Y-%m-%d', time.localtime())
             if not os.path.exists(output):
-                os.mkdir(output)
-
+                os.makedirs(output)
             img = torch.from_numpy(img).to(device)
             img = img.half() if half else img.float()  # uint8 to fp16/32
             img /= 255.0  # 0 - 255 to 0.0 - 1.0
@@ -169,75 +161,74 @@ def detect(save_img=False, view_img=False):
                     logging.info('-------------------------------------------------\n%s' % det)
 
                     now = time.strftime('%Y-%m-%d %H.%M.%S', time.localtime())
-                    if save_img:
-                        save_path = os.path.join(output, now + '.jpg')
-                        cv2.imwrite(save_path, im0)
                     # Print results
                     for c in det[:, -1].unique():
                         n = (det[:, -1] == c).sum()  # detections per class
                         s += '%g %ss, ' % (n, names[int(c)])  # add to string
-                    # Write results
-                    for *xyxy, conf, cls in det:
-                        cls = int(cls.detach().numpy())
-                        # xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
-                        if cls == 2 or cls == 0:
-                            if init_x is None:
-                                init_x = end_x = xyxy[0]
-                            elif xyxy[0] <= init_x:
-                                end_x = xyxy[0]
-                                retval, buffer = cv2.imencode('.jpeg', im0)
-                                pic_str = base64.b64encode(buffer).decode()
-                                status, timestamp, result = is_open(cls, pic_str)
-                                # states[names[cls]]['status'] = status
-                                # states[names[cls]]['timestamp'] = timestamp
-                                if status:
-                                    logging.info('************ 开门 ***********')
-                                    logging.info('result: %s' % json.dumps(result, ensure_ascii=False))
-                                    # if cls == 2:
-                                    # states[names[cls]]['number'] = result['words_result']['number']
-                                    res_data = send_command(
-                                        server_url,
-                                        'open',
-                                        number=result['words_result']['number'] if cls == 2 else None)
-                                    logging.info('status code: %s' % json.dumps(res_data, ensure_ascii=False))
-                                    time.sleep(3)
-                                    init_x = end_x = None
-                            else:
-                                end_x = xyxy[0]
-                                if init_x < 1200 and end_x - init_x > 270:
-                                    logging.info('************ 关门 ************')
-                                    # states['close']['status'] = True
-                                    # states['close']['timestamp'] = time.time() * 1000
-                                    res_data = send_command(server_url, 'close')
-                                    logging.info('status code: %s' % json.dumps(res_data, ensure_ascii=False))
-                                    logging.info(
-                                        'init_x: %.3f, end_x: %.3f' % (init_x.detach().numpy(), end_x.detach().numpy()))
-                                    init_x = end_x = None
-                                    time.sleep(5)
-                            # logging.info('status: %s' % json.dumps(states, ensure_ascii=False))
-                        # xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
-                        # with open(txt_path + '.txt', 'a') as f:
-                        #             f.write(('%g ' * 5 + '\n') % (cls, *xywh))  # label format
-                        if save_img or view_img:  # Add bbox to image
-                            label = '%s %.2f' % (names[int(cls)], conf)
-                            plot_one_box(xyxy, im0, label=label, color=colors[int(cls)], line_thickness=3)
+                        c = int(c)
+                        if init_x[c] is None:
+                            init_x[c] = end_x[c] = det[det[:, -1] == c][:, 0].min()
+                        else:
+                            # Write results
+                            for *xyxy, conf, cls in det[det[:, -1] == c]:
+                                cls = int(cls.cpu().detach().numpy())
+                                # xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
+                                # if cls == 2 or cls == 0:
+                                # if init_x[cls] is None:
+                                #     init_x[cls] = end_x[cls] = xyxy[0]
+                                if xyxy[0] <= init_x[cls] and xyxy[0] < 1100:
+                                    end_x[cls] = xyxy[0]
+                                    retval, buffer = cv2.imencode('.jpeg', im0)
+                                    pic_str = base64.b64encode(buffer).decode()
+                                    status, timestamp, result = is_open(cls, pic_str)
+                                    if result is not None:
+                                        logging.info('result: %s' % json.dumps(result, ensure_ascii=False))
+                                    if status:
+                                        logging.info('************ 开门 ***********')
+                                        res_data = send_command(
+                                            server_url,
+                                            'open',
+                                            number=result['words_result']['number'] if cls == 2 else None)
+                                        logging.info('status code: %s' % json.dumps(res_data, ensure_ascii=False))
+                                        time.sleep(10)
+                                        init_x[cls] = end_x[cls] = None
+                                elif xyxy[0] > init_x[cls]:
+                                    end_x[cls] = xyxy[0]
+                                    if init_x[cls] < 700 and end_x[cls] - init_x[cls] > 300:
+                                        logging.info('************ 关门 ************')
+                                        res_data = send_command(server_url, 'close')
+                                        logging.info('status code: %s' % json.dumps(res_data, ensure_ascii=False))
+                                        logging.info(
+                                            'init_x: %.3f, end_x: %.3f' % (init_x[cls].cpu().detach().numpy(), end_x[cls].cpu().detach().numpy()))
+                                        init_x[cls] = end_x[cls] = None
+                                        time.sleep(10)
+                                # xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
+                                # with open(txt_path + '.txt', 'a') as f:
+                                #             f.write(('%g ' * 5 + '\n') % (cls, *xywh))  # label format
+                                if save_img or view_img:  # Add bbox to image
+                                    label = '%s %.2f' % (names[int(cls)], conf)
+                                    plot_one_box(xyxy, im0, label=label, color=colors[int(cls)], line_thickness=3)
+                    if save_img:
+                        save_path = os.path.join(output, now + '.jpg')
+                        logging.info('保存图片至：%s' % save_path)
+                        cv2.imencode('.jpg', im0)[1].tofile(save_path)
                 else:
-                    # states['car']['status'] = False
-                    # states['person']['status'] = False
-                    if end_x is not None and init_x is not None and end_x > init_x and init_x < 1200 and (
-                            end_x - init_x > 270 or end_x > 1200):
-                        logging.info('*********** 首次从有物体转换为无物体，识别关门 ***********')
-                        # states['close']['status'] = True
-                        # states['close']['timestamp'] = time.time() * 1000
-                        res_data = send_command(server_url, 'close')
-                        logging.info('status code: %s' % json.dumps(res_data, ensure_ascii=False))
-                        logging.info('init_x: %.3f, end_x: %.3f' % (init_x.detach().numpy(), end_x.detach().numpy()))
-                        # logging.info('status: %s' % json.dumps(states, ensure_ascii=False))
-                        time.sleep(5)
-                    else:
-                        #     states['close']['status'] = False
-                        time.sleep(0.5)
-                    init_x = end_x = None
+                    for cls in opt.classes:
+                        if end_x[cls] is not None and init_x[
+                                cls] is not None and end_x[cls] > init_x[
+                                    cls] and init_x[cls] < 700 and (
+                                        end_x[cls] - init_x[cls] > 300
+                                        or end_x[cls] > 1200):
+                            logging.info('*********** 首次从有物体转换为无物体，识别关门 ***********')
+                            res_data = send_command(server_url, 'close')
+                            logging.info('status code: %s' % json.dumps(res_data, ensure_ascii=False))
+                            logging.info('init_x: %.3f, end_x: %.3f' %
+                                         (init_x[cls].cpu().detach().numpy(),
+                                          end_x[cls].cpu().detach().numpy()))
+                            time.sleep(5)
+                        else:
+                            time.sleep(0.5)
+                        init_x[cls] = end_x[cls] = None
 
                 # Print time (inference + NMS)
                 print('%sDone. (%.3fs)' % (s, t2 - t1))
@@ -273,6 +264,8 @@ def detect(save_img=False, view_img=False):
     except Exception:
         # traceback.print_exc()
         logging.exception('detect 报错')
+        torch.cuda.empty_cache()
+        time.sleep(5)
         detect()
 
 
@@ -280,9 +273,9 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--weights', type=str, default='weights/yolov5s.pt', help='model.pt path')
     parser.add_argument('--source', type=str, default='inference/images', help='source')  # file/folder, 0 for webcam
-    parser.add_argument('--output', type=str, default='inference/output', help='output folder')  # output folder
+    parser.add_argument('--output', type=str, default='temp', help='output folder')  # output folder
     parser.add_argument('--img-size', type=int, default=640, help='inference size (pixels)')
-    parser.add_argument('--conf-thres', type=float, default=0.4, help='object confidence threshold')
+    parser.add_argument('--conf-thres', type=float, default=0.6, help='object confidence threshold')
     parser.add_argument('--iou-thres', type=float, default=0.5, help='IOU threshold for NMS')
     parser.add_argument('--fourcc', type=str, default='mp4v', help='output video codec (verify ffmpeg support)')
     parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
@@ -293,7 +286,8 @@ if __name__ == '__main__':
     parser.add_argument('--augment', action='store_true', help='augmented inference')
     opt = parser.parse_args()
     opt.img_size = check_img_size(opt.img_size)
-    print(opt)
+    print(opt.classes)
+    os.chdir(os.path.split(os.path.abspath(__file__))[0])
     setup_logging()
     # torch.no_grad()
     # process_1 = Thread(target=app.run, kwargs={'host': '0.0.0.0'})
@@ -302,4 +296,4 @@ if __name__ == '__main__':
     # process_1.start()
     #
     with torch.no_grad():
-        detect(True)
+        detect(save_img=True, view_img=False)
