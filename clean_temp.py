@@ -2,6 +2,7 @@ import os
 import shutil
 
 if __name__ == '__main__':
+    os.chdir(os.path.split(os.path.abspath(__file__))[0])
     file_list = os.listdir('./temp')
     file_list = sorted(file_list)
     backup_days = 15

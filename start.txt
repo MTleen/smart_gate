@@ -1,0 +1,1 @@
+sudo docker run --gpus all --net=host --ipc=host -itd --restart=always -v ~/Docker/smart_gate:/usr/src/app --name=yolov5 ultralytics/yolov5:latest python /usr/src/app/detect.py --classes 0 2 --output ./temp --weights weights/yolov5s.pt --conf 0.4 --source rtsp://admin:HikLZDADB@192.168.1.27:554/h264/ch1/main/av_stream --device 'cpu'ac

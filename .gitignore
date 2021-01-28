@@ -40,6 +40,11 @@ pycocotools/*
 results*.txt
 gcp_test*.sh
 
+log/
+data/
+temp/
+model/*.yaml
+weights/
 # MATLAB GitIgnore -----------------------------------------------------------------------------------------------------
 *.m~
 *.mat

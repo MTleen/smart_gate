@@ -73,17 +73,17 @@ def is_open(cls, pic_str):
                 result['words_result']['number'] == '浙AB259Z' or result['words_result'][
             'number'] == '浙AEQ356'):
             car_num = result['words_result']['number']
-            params = {"image": pic_str, "top_num": 5}
-            request_url = car_classify_url + "?access_token=" + access_token
-            car_classify_res = requests.post(request_url,
-                                             data=params,
-                                             headers=headers).json()
-            result['car_type'] = car_classify_res['result']
-            if (car_num == '浙AB259Z'
-                    and car_classify_res['result'][0]['name'] == '别克君越') or (
-                        car_num == '浙AEQ356'
-                        and car_classify_res['result'][0]['name'] == '奔腾X80'):
-                return True, time.time() * 1000, result
+            # params = {"image": pic_str, "top_num": 5}
+            # request_url = car_classify_url + "?access_token=" + access_token
+            # car_classify_res = requests.post(request_url,
+            #                                  data=params,
+            #                                  headers=headers).json()
+            # result['car_type'] = car_classify_res['result']
+            # if (car_num == '浙AB259Z'
+            #         and car_classify_res['result'][0]['name'] == '别克君越') or (
+            #             car_num == '浙AEQ356'
+            #             and car_classify_res['result'][0]['name'] == '奔腾X80'):
+            return True, time.time() * 1000, result
     return False, None, result
 
 
@@ -165,49 +165,71 @@ def detect(save_img=True, view_img=False):
                     for c in det[:, -1].unique():
                         n = (det[:, -1] == c).sum()  # detections per class
                         s += '%g %ss, ' % (n, names[int(c)])  # add to string
-                        c = int(c)
+                        c = int(c.cpu().detach().numpy())
                         if init_x[c] is None:
                             init_x[c] = end_x[c] = det[det[:, -1] == c][:, 0].min()
                         else:
                             # Write results
-                            for *xyxy, conf, cls in det[det[:, -1] == c]:
-                                cls = int(cls.cpu().detach().numpy())
-                                # xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
-                                # if cls == 2 or cls == 0:
-                                # if init_x[cls] is None:
-                                #     init_x[cls] = end_x[cls] = xyxy[0]
-                                if xyxy[0] <= init_x[cls] and xyxy[0] < 1100:
-                                    end_x[cls] = xyxy[0]
-                                    retval, buffer = cv2.imencode('.jpeg', im0)
-                                    pic_str = base64.b64encode(buffer).decode()
-                                    status, timestamp, result = is_open(cls, pic_str)
-                                    if result is not None:
-                                        logging.info('result: %s' % json.dumps(result, ensure_ascii=False))
-                                    if status:
-                                        logging.info('************ 开门 ***********')
-                                        res_data = send_command(
-                                            server_url,
-                                            'open',
-                                            number=result['words_result']['number'] if cls == 2 else None)
-                                        logging.info('status code: %s' % json.dumps(res_data, ensure_ascii=False))
-                                        time.sleep(10)
-                                        init_x[cls] = end_x[cls] = None
-                                elif xyxy[0] > init_x[cls]:
-                                    end_x[cls] = xyxy[0]
-                                    if init_x[cls] < 700 and end_x[cls] - init_x[cls] > 300:
-                                        logging.info('************ 关门 ************')
-                                        res_data = send_command(server_url, 'close')
-                                        logging.info('status code: %s' % json.dumps(res_data, ensure_ascii=False))
-                                        logging.info(
-                                            'init_x: %.3f, end_x: %.3f' % (init_x[cls].cpu().detach().numpy(), end_x[cls].cpu().detach().numpy()))
-                                        init_x[cls] = end_x[cls] = None
-                                        time.sleep(10)
-                                # xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
-                                # with open(txt_path + '.txt', 'a') as f:
-                                #             f.write(('%g ' * 5 + '\n') % (cls, *xywh))  # label format
-                                if save_img or view_img:  # Add bbox to image
-                                    label = '%s %.2f' % (names[int(cls)], conf)
-                                    plot_one_box(xyxy, im0, label=label, color=colors[int(cls)], line_thickness=3)
+                            end_x[c] = det[det[:, -1] == c][:, 0].min()
+                            if end_x[c] <= init_x[c] and end_x[c] < 1100:
+                                retval, buffer = cv2.imencode('.jpeg', im0)
+                                pic_str = base64.b64encode(buffer).decode()
+                                status, timestamp, result = is_open(cls, pic_str)
+                                if result is not None:
+                                    logging.info('result: %s' % json.dumps(result, ensure_ascii=False))
+                                if status:
+                                    logging.info('************ 开门 ***********')
+                                    res_data = send_command(
+                                        server_url,
+                                        'open',
+                                        number=result['words_result']['number'] if c == 2 else None)
+                                    logging.info('status code: %s' % json.dumps(res_data, ensure_ascii=False))
+                                    init_x[c] = end_x[c] = None
+                                    time.sleep(10)
+                            elif end_x[c] > init_x[c]:
+                                if init_x[c] < 700 and end_x[c] - init_x[c] > 300:
+                                    logging.info('************ 关门 ************')
+                                    res_data = send_command(server_url, 'close')
+                                    logging.info('status code: %s' % json.dumps(res_data, ensure_ascii=False))
+                                    logging.info(
+                                        'init_x: %.3f, end_x: %.3f' % (init_x[c].cpu().detach().numpy(), end_x[c].cpu().detach().numpy()))
+                                    init_x[c] = end_x[c] = None
+                                    time.sleep(10)
+                        for *xyxy, conf, cls in det[det[:, -1] == c]:
+                            cls = int(cls.cpu().detach().numpy())
+                            # # xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
+                            # if xyxy[0] <= init_x[cls] and xyxy[0] < 1100:
+                            #     end_x[cls] = xyxy[0]
+                            #     retval, buffer = cv2.imencode('.jpeg', im0)
+                            #     pic_str = base64.b64encode(buffer).decode()
+                            #     status, timestamp, result = is_open(cls, pic_str)
+                            #     if result is not None:
+                            #         logging.info('result: %s' % json.dumps(result, ensure_ascii=False))
+                            #     if status:
+                            #         logging.info('************ 开门 ***********')
+                            #         res_data = send_command(
+                            #             server_url,
+                            #             'open',
+                            #             number=result['words_result']['number'] if cls == 2 else None)
+                            #         logging.info('status code: %s' % json.dumps(res_data, ensure_ascii=False))
+                            #         init_x[cls] = end_x[cls] = None
+                            #         time.sleep(10)
+                            # elif xyxy[0] > init_x[cls]:
+                            #     end_x[cls] = xyxy[0]
+                            #     if init_x[cls] < 700 and end_x[cls] - init_x[cls] > 300:
+                            #         logging.info('************ 关门 ************')
+                            #         res_data = send_command(server_url, 'close')
+                            #         logging.info('status code: %s' % json.dumps(res_data, ensure_ascii=False))
+                            #         logging.info(
+                            #             'init_x: %.3f, end_x: %.3f' % (init_x[cls].cpu().detach().numpy(), end_x[cls].cpu().detach().numpy()))
+                            #         init_x[cls] = end_x[cls] = None
+                            #         time.sleep(10)
+                            # xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
+                            # with open(txt_path + '.txt', 'a') as f:
+                            #             f.write(('%g ' * 5 + '\n') % (cls, *xywh))  # label format
+                            if save_img or view_img:  # Add bbox to image
+                                label = '%s %.2f' % (names[cls], conf)
+                                plot_one_box(xyxy, im0, label=label, color=colors[int(cls)], line_thickness=3)
                     if save_img:
                         save_path = os.path.join(output, now + '.jpg')
                         logging.info('保存图片至：%s' % save_path)
@@ -261,6 +283,10 @@ def detect(save_img=True, view_img=False):
         #     if platform == 'darwin':  # MacOS
         #         os.system('open ' + save_path)
         print('Done. (%.3fs)' % (time.time() - t0))
+        detect()
+    except RuntimeError:
+    	logging.exception('detect 报错')
+    	return
     except Exception:
         # traceback.print_exc()
         logging.exception('detect 报错')
